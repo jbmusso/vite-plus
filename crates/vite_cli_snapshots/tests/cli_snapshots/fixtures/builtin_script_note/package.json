@@ -1,0 +1,12 @@
+{
+  "name": "@test/builtin-script-note",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host --port 5000",
+    "lint": "vp lint --deny-warnings src/",
+    "format": "prettier --write src/",
+    "wrapped-dev": "vpt pipe-stdin ignored -- vp dev --port 12312312312"
+  }
+}

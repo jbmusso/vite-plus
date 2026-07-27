@@ -7,6 +7,7 @@ mod execution;
 mod handler;
 mod help;
 mod resolver;
+mod script_note;
 mod types;
 
 use std::{borrow::Cow, env, ffi::OsStr, sync::Arc};
@@ -25,7 +26,7 @@ pub use types::{
 use vite_error::Error;
 use vite_path::{AbsolutePath, AbsolutePathBuf};
 pub use vite_shared::init_tracing;
-use vite_shared::{PrependOptions, prepend_to_path_env};
+use vite_shared::{PrependOptions, env_vars, prepend_to_path_env};
 use vite_str::Str;
 use vite_task::{ExitStatus, Session, SessionConfig};
 
@@ -263,8 +264,15 @@ pub async fn main(
     options: Option<CliOptions>,
     args: Option<Vec<String>>,
 ) -> Result<ExitStatus, Error> {
-    let args_vec: Vec<String> = args.unwrap_or_else(|| env::args().skip(1).collect());
-    let args_vec = normalize_help_args(args_vec);
+    let raw_args: Vec<String> = args.unwrap_or_else(|| env::args().skip(1).collect());
+    // The subcommand as the user wrote it. The global CLI resolves a command to
+    // its canonical name before running this one, so when it says what was
+    // written, that is the only accurate source. Otherwise take it from the
+    // command line, where `normalize_help_args` may replace it — `vp help fmt`
+    // runs as `fmt --help`, and writing `help` is not writing the built-in.
+    let raw_subcommand = env::var(env_vars::VP_RAW_SUBCOMMAND).ok();
+    let written_locally = raw_args.first().cloned();
+    let args_vec = normalize_help_args(raw_args);
     if should_print_help(&args_vec) {
         print_help();
         return Ok(ExitStatus::SUCCESS);
@@ -277,7 +285,23 @@ pub async fn main(
     };
 
     match cli_args {
-        CLIArgs::Synthesizable(subcmd) => execute_direct_subcommand(subcmd, &cwd, options).await,
+        CLIArgs::Synthesizable(subcmd) => {
+            // Only the built-ins can be mistaken for a script. `run`/`cache`
+            // below are the script path itself; `install` and friends
+            // legitimately trigger a project's `install` lifecycle scripts
+            // through the package manager, so redirecting those to `vpr` would
+            // be wrong; and `exec` names a binary rather than a task.
+            //
+            // Without a name from the global CLI, a built-in parsed means an
+            // untouched token is that built-in's own name; anything
+            // normalization rewrote was a different request.
+            let written = raw_subcommand.or_else(|| {
+                written_locally
+                    .filter(|name| Some(name.as_str()) == args_vec.first().map(String::as_str))
+            });
+            script_note::print(written.as_deref(), &cwd);
+            execute_direct_subcommand(subcmd, &cwd, options).await
+        }
         CLIArgs::ViteTask(command) => execute_vite_task_command(command, cwd, options).await,
         CLIArgs::PackageManager(pm) => execute_pm_command(pm, &cwd).await,
         CLIArgs::Exec(exec_args) => crate::exec::execute(exec_args, &cwd).await,
